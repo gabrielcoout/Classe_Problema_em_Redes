@@ -23,11 +23,12 @@ class ProblemaP1(Grafo):
         self.M = None
         self.K = None
         self.is_fitted = False
+        self.
 
         if Q_ext is not None:
-            self.set_Q_ext(Q_ext)  # já faz validação inicial
+            self.set_Q_ext(Q_ext)  
 
-    def fit(self):
+    def setup(self):
         if self.Q_ext is None:
             raise ValueError("Q_ext must be defined before fitting. Use set_Q_ext().")
         
