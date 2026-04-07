@@ -23,7 +23,6 @@ class ProblemaP1(Grafo):
         self.M = None
         self.K = None
         self.is_fitted = False
-        self.
 
         if Q_ext is not None:
             self.set_Q_ext(Q_ext)  

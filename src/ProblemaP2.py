@@ -79,11 +79,23 @@ class ProblemaP2(ProblemaP1):
         return scenario
 
     def _run_single(self):
-        """Executa uma única simulação Monte Carlo. Retorna True se houve falha."""
+        """Executa uma única simulação. Retorna apenas booleano (falha ou não)."""
         obstruction = self._sample_obstruction()
         problem = self._get_problem(obstruction)
         problem.solve()
         return bool(np.any(problem.p > self.P_max))
+    
+    def _run_single_detailed(self):
+        """Executa uma única simulação. Retorna (pressões, pressão_máxima, houve_falha)."""
+        obstruction = self._sample_obstruction()
+        problem = self._get_problem(obstruction)
+        problem.solve()
+        
+        pressures = problem.p
+        max_p = np.max(pressures)
+        failure = bool(np.any(pressures > self.P_max))
+        
+        return pressures, max_p, failure
 
     # ------------------------------------------------------------------
     # Interface pública
@@ -98,15 +110,15 @@ class ProblemaP2(ProblemaP1):
         self.failures = 0
 
         for _ in range(self.n_samples):
-            pressures, max_p, failure = self._run_single()
-
+            pressures, max_p, failure = self._run_single_detailed()  # Mude aqui!
+            
             self.results.append(pressures)
             self.max_pressures.append(max_p)
-
+            
             if failure:
                 self.failures += 1
                 self.node_failure_counts += (pressures > self.P_max)
-
+        
         self.results = np.array(self.results)
         self.max_pressures = np.array(self.max_pressures)
 
