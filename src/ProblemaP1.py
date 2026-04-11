@@ -1,6 +1,6 @@
-import matplotlib.pyplot as plt
-import networkx as nx
 import numpy as np
+from scipy.sparse import diags
+from scipy.sparse.linalg import spsolve
 from src.Except import *
 from src.Grafo import *
 
@@ -13,15 +13,17 @@ class ProblemaP1(Grafo):
         patm: pressão de referência
         Q_ext: dict {node: fluxo externo}
         """
-        super().__init__(nodes, edges)
-        self.kind = 'Directed'
+        super().__init__(nodes, edges, kind='Directed')
         self.mu = mu
         self.Q_ext = None if Q_ext is None else Q_ext
         self.patm = patm
         self.validate_problem_schema()
 
+        self.A = None
         self.M = None
         self.K = None
+        self.p = None
+        self.q = None
         self.is_fitted = False
 
         if Q_ext is not None:
@@ -30,10 +32,10 @@ class ProblemaP1(Grafo):
     def setup(self):
         if self.Q_ext is None:
             raise ValueError("Q_ext must be defined before fitting. Use set_Q_ext().")
-        
-        self.K = K = self._compute_physical_matrix()
-        A = self.compute_connection_matrix()
-        self.M = A.T @ K @ A
+
+        self.K = self._compute_physical_matrix()
+        self.A = self.compute_connection_matrix(sparse_output=True)
+        self.M = (self.A.T @ self.K @ self.A).tocsr()
         self.is_fitted = True
         return self
 
@@ -42,35 +44,52 @@ class ProblemaP1(Grafo):
             raise ValueError("Define Q_ext before solving the system of equations. Use set_Q_ext() method.")
         if not self.is_fitted:
             raise NotFittedError()
-        
-        # Transform dict Q_ext em array na ordem dos nós
-        node_keys = list(self.nodes.keys())
-        b = np.array([self.Q_ext[key] for key in node_keys])
 
-        fixed_indices = [i for i, ext_flow in enumerate(b) if ext_flow < 0]
-        if not fixed_indices:
+        node_keys = self.get_node_order()
+        b = np.array([self.Q_ext[key] for key in node_keys], dtype=float)
+
+        fixed_indices = np.array([i for i, ext_flow in enumerate(b) if ext_flow < 0], dtype=int)
+        if fixed_indices.size == 0:
             raise ValueError("No node with negative flow found for reference pressure.")
+
         n = len(node_keys)
-        all_indices = np.arange(n)
-        free_indices = np.array([i for i in all_indices if i not in fixed_indices])
-        
-        p = np.zeros(n, dtype=float)  # Inicializa vetor de pressões
+        all_indices = np.arange(n, dtype=int)
+        free_indices = np.setdiff1d(all_indices, fixed_indices)
+
+        p = np.zeros(n, dtype=float)
         p[fixed_indices] = self.patm
 
-        # Sistema reduzido:
-        free_free_matrix = self.M[np.ix_(free_indices, free_indices)]
-        free_fixed_matrix = self.M[np.ix_(free_indices, fixed_indices)]
+        free_free_matrix = self.M[free_indices][:, free_indices]
+        free_fixed_matrix = self.M[free_indices][:, fixed_indices]
         free_rhs = b[free_indices] - free_fixed_matrix @ p[fixed_indices]
 
-        free_pressures = np.linalg.solve(free_free_matrix, free_rhs)
-        p[free_indices] = free_pressures
+        if free_indices.size > 0:
+            free_pressures = spsolve(free_free_matrix, free_rhs)
+            p[free_indices] = np.asarray(free_pressures, dtype=float)
+
         self.p = p
-
-        # Atualiza self.nodes com pressão
-        for idx, key in enumerate(node_keys):
-            self.nodes[key]['pressao'] = float(self.p[idx])
-
+        self._update_node_pressures()
+        self._compute_edge_flows()
         return self.p
+    
+    def _update_node_pressures(self):
+        for idx, key in enumerate(self.get_node_order()):
+            self.nodes[key]["pressao"] = float(self.p[idx])
+
+    def _compute_edge_flows(self):
+        if self.p is None:
+            raise ValueError("solve must be called before computing edge flows.")
+        if self.A is None or self.K is None:
+            raise NotFittedError()
+
+        pressure_drop = self.A @ self.p
+        self.q = np.asarray(self.K @ pressure_drop, dtype=float).reshape(-1)
+
+        for idx, (u, v) in enumerate(self.get_edge_list()):
+            self.edges[u][v]["vazao"] = float(self.q[idx])
+            self.edges[u][v]["delta_pressao"] = float(pressure_drop[idx])
+
+        return self.q    
 
     def set_Q_ext(self, Q_ext: dict):
         """
@@ -142,22 +161,17 @@ class ProblemaP1(Grafo):
         D = np.sqrt(4 * area / np.pi)
         return (np.pi * D**4) / (128 * self.mu * length)
 
-    def _compute_physical_matrix(self) -> np.ndarray:
-        K = np.zeros((self.num_edges, self.num_edges))
+    def _compute_physical_matrix(self):
+        diagonal = []
 
-        idx = 0
         for u in self.edges:
             for v, attrs in self.edges[u].items():
                 A = float(attrs["area"])
                 L = float(attrs["length"])
+                diagonal.append(self._compute_conductivity(A, L))
 
-                c = self._compute_conductivity(A, L)
-
-                K[idx, idx] = c
-                idx += 1
-
-        self.K = K
-        return K
+        self.K = diags(diagonal, offsets=0, format="csr", dtype=float)
+        return self.K
     
     def validate_Q_ext(self):
         if len(self.Q_ext) != self.num_nodes:

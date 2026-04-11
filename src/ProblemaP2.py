@@ -50,31 +50,28 @@ class ProblemaP2(ProblemaP1):
         scenario = ProblemaP1.__new__(ProblemaP1)
         scenario.__dict__.update(copy.deepcopy(
             {k: v for k, v in self.__dict__.items()
-            if k not in ('r_prob', 'alpha', 'P_max', 'n_samples',
-                        'rng', 'failures', 'results',
-                        'max_pressures', 'node_failure_counts')}
+             if k not in (
+                 "r_prob", "alpha", "P_max", "n_samples",
+                 "rng", "failures", "results",
+                 "max_pressures", "node_failure_counts"
+             )}
         ))
-        # NÃO chama scenario.setup() — K base já veio do deepcopy
 
-        # mapeia (u, v) -> índice diagonal de K
         edge_index = {
-            (u, v): idx
-            for idx, (u, v) in enumerate(
-                (u, v)
-                for u in self.edges
-                for v in self.edges[u]
-            )
+            edge: idx
+            for idx, edge in enumerate(self.get_edge_list())
         }
 
-        # aplica obstrução: divide condutância por alpha
-        for (u, v), obstructed in obstruction_state.items():
-            if obstructed:
-                i = edge_index[(u, v)]
-                scenario.K[i, i] /= self.alpha
+        scenario.K = scenario.K.tolil(copy=True)
 
-        # reconstrói M com K modificado
-        A = scenario.compute_connection_matrix()
-        scenario.M = A.T @ scenario.K @ A
+        for edge, obstructed in obstruction_state.items():
+            if obstructed:
+                idx = edge_index[edge]
+                scenario.K[idx, idx] /= self.alpha
+
+        scenario.K = scenario.K.tocsr()
+        scenario.M = (scenario.A.T @ scenario.K @ scenario.A).tocsr()
+        scenario.is_fitted = True
 
         return scenario
 
