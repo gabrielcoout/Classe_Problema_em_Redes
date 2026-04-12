@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+from matplotlib import cm, colors
+from scipy.sparse import csr_matrix
 
 class Grafo:
     def __init__(self, nodes=None, edges=None, kind=None):
@@ -77,10 +79,16 @@ class Grafo:
 
         del self.nodes[index]
         self.num_nodes -= 1
+    
+    def get_node_order(self):
+        return list(self.nodes.keys())
 
-    def compute_connection_matrix(self) -> np.ndarray:
+    def get_edge_list(self):
+        return [(u, v) for u in self.edges for v in self.edges[u]]
+
+    def compute_connection_matrix(self, sparse_output=True):
         """
-        Returns the incidence (connection) matrix for a directed graph.
+        Returns the incidence matrix for a directed graph.
 
         Each row represents an edge.
         +1 -> source node
@@ -90,21 +98,28 @@ class Grafo:
         if self.kind != "Directed":
             raise ValueError("Connection matrix is defined only for directed graphs.")
 
-        # map node -> column index
-        node_list = list(self.nodes.keys())
+        node_list = self.get_node_order()
         node_index = {node: i for i, node in enumerate(node_list)}
+        edge_list = self.get_edge_list()
 
-        # initialize matrix
-        B = np.zeros((self.num_edges, self.num_nodes))
+        rows = []
+        cols = []
+        data = []
 
-        row = 0
-        for u in self.edges:
-            for v in self.edges[u]:
-                B[row, node_index[u]] = 1    # source
-                B[row, node_index[v]] = -1   # target
-                row += 1
+        for row, (u, v) in enumerate(edge_list):
+            rows.extend([row, row])
+            cols.extend([node_index[u], node_index[v]])
+            data.extend([1.0, -1.0])
 
-        return B
+        B = csr_matrix(
+            (data, (rows, cols)),
+            shape=(len(edge_list), len(node_list)),
+            dtype=float
+        )
+
+        if sparse_output:
+            return B
+        return B.toarray()
 
     def get_network(self):
         G = nx.DiGraph() if self.kind == "Directed" else nx.Graph()
@@ -120,8 +135,213 @@ class Grafo:
 
         return G
 
+    def _get_layout_positions(self, G, layout, seed=42):
+        if layout == "planar":
+            try:
+                return nx.planar_layout(G)
+            except Exception:
+                return nx.spring_layout(G, seed=seed)
 
-    def plot(self, show_node_labels=True, show_edge_labels=True, precision=2, layout="planar"):
+        if layout == "spring":
+            return nx.spring_layout(G, seed=seed)
+
+        if layout == "circular":
+            return nx.circular_layout(G)
+
+        if layout == "shell":
+            return nx.shell_layout(G)
+
+        if layout == "kamada_kawai":
+            return nx.kamada_kawai_layout(G)
+
+        if layout == "spectral":
+            return nx.spectral_layout(G)
+
+        raise ValueError(
+            "layout must be one of: 'planar', 'spring', 'circular', 'shell', 'kamada_kawai', 'spectral'"
+        )
+
+    def _format_attr_value(self, key, value, precision):
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return f"{key[0].upper()}:{float(value):.{precision}f}"
+        return f"{key[0].upper()}:{value}"
+
+    def plot(
+        self,
+        show_node_labels=True,
+        show_edge_labels=True,
+        precision=2,
+        layout="planar",
+        figsize=(10, 8),
+        node_value_attr="pressao",
+        edge_value_attr="vazao",
+        node_cmap="viridis",
+        edge_cmap="plasma",
+        use_abs_edge_color=True,
+        edge_width_range=(1.5, 5.5),
+    ):
+        G = self.get_network()
+        pos = self._get_layout_positions(G, layout=layout)
+        fig, ax = plt.subplots(figsize=figsize)
+
+        node_order = list(G.nodes())
+        edge_order = list(G.edges())
+
+        node_values = np.array(
+            [
+                float(G.nodes[node].get(node_value_attr, np.nan))
+                if isinstance(G.nodes[node].get(node_value_attr, np.nan), (int, float, np.integer, np.floating))
+                else np.nan
+                for node in node_order
+            ],
+            dtype=float,
+        )
+
+        edge_raw_values = np.array(
+            [
+                float(G.edges[edge].get(edge_value_attr, np.nan))
+                if isinstance(G.edges[edge].get(edge_value_attr, np.nan), (int, float, np.integer, np.floating))
+                else np.nan
+                for edge in edge_order
+            ],
+            dtype=float,
+        )
+
+        edge_color_values = np.abs(edge_raw_values) if use_abs_edge_color else edge_raw_values
+
+        has_node_gradient = np.isfinite(node_values).any()
+        has_edge_gradient = np.isfinite(edge_color_values).any()
+
+        if has_node_gradient:
+            valid = node_values[np.isfinite(node_values)]
+            vmin, vmax = float(np.min(valid)), float(np.max(valid))
+            if np.isclose(vmin, vmax):
+                vmax = vmin + 1e-12
+
+            node_norm = colors.Normalize(vmin=vmin, vmax=vmax)
+
+            nx.draw_networkx_nodes(
+                G,
+                pos,
+                node_size=900,
+                node_color=node_values,
+                cmap=cm.get_cmap(node_cmap),
+                vmin=vmin,
+                vmax=vmax,
+                ax=ax,
+            )
+        else:
+            node_norm = None
+            nx.draw_networkx_nodes(
+                G,
+                pos,
+                node_size=900,
+                node_color="skyblue",
+                ax=ax,
+            )
+
+        if has_edge_gradient:
+            valid = edge_color_values[np.isfinite(edge_color_values)]
+            vmin, vmax = float(np.min(valid)), float(np.max(valid))
+            if np.isclose(vmin, vmax):
+                vmax = vmin + 1e-12
+
+            edge_norm = colors.Normalize(vmin=vmin, vmax=vmax)
+            finite_values = np.where(np.isfinite(edge_color_values), edge_color_values, vmin)
+
+            if np.isclose(finite_values.max(), finite_values.min()):
+                edge_widths = np.full(len(edge_order), float(np.mean(edge_width_range)))
+            else:
+                edge_widths = np.interp(
+                    finite_values,
+                    (finite_values.min(), finite_values.max()),
+                    edge_width_range,
+                )
+
+            nx.draw_networkx_edges(
+                G,
+                pos,
+                edge_color=edge_color_values,
+                edge_cmap=cm.get_cmap(edge_cmap),
+                edge_vmin=vmin,
+                edge_vmax=vmax,
+                width=edge_widths,
+                arrows=self.kind == "Directed",
+                arrowstyle="-|>" if self.kind == "Directed" else "-",
+                arrowsize=20,
+                connectionstyle="arc3,rad=0.03" if self.kind == "Directed" else "arc3",
+                ax=ax,
+            )
+        else:
+            edge_norm = None
+            nx.draw_networkx_edges(
+                G,
+                pos,
+                width=2.5,
+                edge_color="dimgray",
+                arrows=self.kind == "Directed",
+                arrowstyle="-|>" if self.kind == "Directed" else "-",
+                arrowsize=20,
+                connectionstyle="arc3,rad=0.03" if self.kind == "Directed" else "arc3",
+                ax=ax,
+            )
+
+        if show_node_labels:
+            node_labels = {
+                node: node + "\n" + "\n".join(
+                    [self._format_attr_value(k, val, precision) for k, val in attr.items()]
+                )
+                if attr else node
+                for node, attr in G.nodes(data=True)
+            }
+
+            nx.draw_networkx_labels(
+                G,
+                pos,
+                labels=node_labels,
+                font_color="black",
+                font_size=9,
+                ax=ax,
+            )
+
+        if show_edge_labels:
+            edge_labels = {
+                (u, v): "\n".join(
+                    [self._format_attr_value(k, val, precision) for k, val in data.items()]
+                )
+                for u, v, data in G.edges(data=True)
+                if data
+            }
+
+            nx.draw_networkx_edge_labels(
+                G,
+                pos,
+                edge_labels=edge_labels,
+                font_color="black",
+                font_size=8,
+                rotate=False,
+                ax=ax,
+            )
+
+        if has_node_gradient:
+            node_sm = cm.ScalarMappable(norm=node_norm, cmap=cm.get_cmap(node_cmap))
+            node_sm.set_array([])
+            cbar_nodes = fig.colorbar(node_sm, ax=ax, fraction=0.046, pad=0.04)
+            cbar_nodes.set_label(node_value_attr.capitalize())
+
+        if has_edge_gradient:
+            edge_sm = cm.ScalarMappable(norm=edge_norm, cmap=cm.get_cmap(edge_cmap))
+            edge_sm.set_array([])
+            cbar_edges = fig.colorbar(edge_sm, ax=ax, fraction=0.046, pad=0.10)
+            label = f"|{edge_value_attr}|" if use_abs_edge_color else edge_value_attr
+            cbar_edges.set_label(label.capitalize())
+
+        ax.set_title("Visualizacao do grafo")
+        ax.axis("off")
+        fig.tight_layout()
+        plt.show()
+
+    def plot_antigo(self, show_node_labels=True, show_edge_labels=True, precision=2, layout="planar"):
         G = self.get_network()
 
         if layout == "planar":
